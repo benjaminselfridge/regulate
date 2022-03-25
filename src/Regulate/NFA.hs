@@ -1,20 +1,32 @@
 {-# LANGUAGE MonadComprehensions #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 
 -- | A module providing a simple implementation of NFAs in terms of @haggle@
 -- graphs.
 module Regulate.NFA
    ( NFA(..)
+   -- * Generating strings
    , generate
    , generate'
    , generate1
+   -- * NFA combinators
+   , union
+   , intersection
+   , join
    ) where
 
+import Control.Monad (when)
+import Control.Monad.ST
+import Data.Foldable (forM_)
 import Data.Graph.Haggle
+import qualified Data.Map as Map
+import Data.Maybe (fromJust)
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.STRef
 
 -- | An @NFA@ over an alphabet @sigma@ is just a directed graph with labels from
 -- @sigma@, along with a designated start state and a set of designated final
@@ -41,8 +53,8 @@ generate1 :: Ord sigma
 generate1 _ seen Seq.Empty = (seen, Seq.Empty)
 generate1 g seen ((v, s) Seq.:<| from) =
   let new =  [ (d, s Seq.:|> l) | e <- outEdges g v
-                               , let d = edgeDest e
-                               , let Just l = edgeLabel g e ]
+                                , let d = edgeDest e
+                                , let Just l = edgeLabel g e ]
   in ( seen `Set.union` Set.fromList new
      , from Seq.>< [ pair | pair <- Seq.fromList new, (not . (`elem` seen)) pair ]
      )
@@ -73,3 +85,83 @@ generate n nfa =
       , (q, s) <- Set.toList pairs
       , q `Set.member` finalStates nfa
       ]
+
+union :: NFA sigma -> NFA sigma -> NFA sigma
+union = undefined
+
+intersection :: NFA sigma -> NFA sigma -> NFA sigma
+intersection = undefined
+
+data Either3 a b c = Left3 a | Middle3 b | Right3 c
+  deriving (Show, Read, Eq, Ord)
+
+-- | Given two NFAs that operate on a common subset, produce an NFA whose
+-- alphabet is the union of the two alphabets, and whose language is exactly the
+-- strings that, when restricted to either of the two alphabets, are exactly the
+-- corresponding languages.
+join :: forall a b c . Ord b => NFA (Either a b) -> NFA (Either b c) -> NFA (Either3 a b c)
+join nfa1 nfa2 = runST $ do
+  let g1 = graph nfa1
+      g2 = graph nfa2
+      s1 = startState nfa1
+      s2 = startState nfa2
+      finals1 = finalStates nfa1
+      finals2 = finalStates nfa2
+
+  g <- newEdgeLabeledGraph newMDigraph
+  startRef <- newSTRef Nothing
+  finalsRef <- newSTRef Set.empty
+
+  -- map from (g1, g2) vertex pairs to g vertices.
+  vertexMapRef <- newSTRef Map.empty
+
+  -- First, add all the vertices and build up the vertex map.
+  forM_ (vertices g1) $ \v1 -> do
+    forM_ (vertices g2) $ \v2 -> do
+      v <- addVertex g
+      -- Add new vertex to vertex map
+      modifySTRef vertexMapRef (Map.insert (v1, v2) v)
+      -- If both vertices are the start state, then the new vertex is the joined
+      -- start state
+      when (v1 == s1 && v2 == s2) $
+        writeSTRef startRef (Just v)
+      -- If both vertices are final states, then the new vertex is one of the
+      -- joined final states
+      when (v1 `Set.member` finals1 && v2 `Set.member` finals2) $
+        modifySTRef finalsRef (Set.insert v)
+
+  vertexMap <- readSTRef vertexMapRef
+
+  -- Create a map from all b labels to corresponding edges in g2.
+  let g2LeftEdgeMap :: Map.Map b (Set Edge)
+      g2LeftEdgeMap = foldr p Map.empty (edges g2)
+      p e m = case fromJust (edgeLabel g2 e) of
+        Left b -> Map.insertWith Set.union b (Set.singleton e) m
+        Right _ -> m
+
+  forM_ (edges g1) $ \e -> case fromJust (edgeLabel g1 e) of
+    Left a -> forM_ (vertices g2) $ \v2 -> do
+      let src = vertexMap Map.! (edgeSource e, v2)
+          dst = vertexMap Map.! (edgeDest e, v2)
+      addLabeledEdge g src dst (Left3 a)
+    Right b -> case Map.lookup b g2LeftEdgeMap of
+      -- Look up the g2 edges with the same label, and add the corresponding
+      -- vertices.
+      Nothing -> return ()
+      Just es -> forM_ es $ \e' -> do
+        let src = vertexMap Map.! (edgeSource e, edgeSource e')
+            dst = vertexMap Map.! (edgeDest e, edgeDest e')
+        addLabeledEdge g src dst (Middle3 b)
+
+  forM_ (edges g2) $ \e -> case fromJust (edgeLabel g2 e) of
+    Left _b -> return ()
+    Right c -> forM_ (vertices g1) $ \v1 -> do
+      let src = vertexMap Map.! (v1, edgeSource e)
+          dst = vertexMap Map.! (v1, edgeDest e)
+      addLabeledEdge g src dst (Right3 c)
+
+  start <- readSTRef startRef
+  finals <- readSTRef finalsRef
+
+  g' <- freeze g
+  return $ NFA g' (fromJust start) finals
