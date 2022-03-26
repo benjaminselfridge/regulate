@@ -22,7 +22,10 @@ maintainer:         benselfridge@galois.com
 extra-source-files: CHANGELOG.md
 
 library
-    exposed-modules:  Regulate.NFA
+    exposed-modules:  Regulate.Conversion
+                      Regulate.NFA
+                      Regulate.NFA.Examples
+                      Regulate.NFA.GraphViz
                       Regulate.Regex
 
     -- Modules included in this library but not exported.
@@ -33,7 +36,10 @@ library
     build-depends:    base >= 4.14,
                       containers,
                       control-monad-omega >= 0.3.1,
-                      haggle
+                      fgl,
+                      graphviz,
+                      haggle,
+                      text
     ghc-options:      -Wall
     hs-source-dirs:   src
     default-language: Haskell2010
