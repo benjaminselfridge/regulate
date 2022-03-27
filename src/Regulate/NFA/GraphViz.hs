@@ -6,6 +6,7 @@ module Regulate.NFA.GraphViz where
 import Regulate.NFA
 
 import Control.Monad (void)
+import Data.Foldable (toList)
 import qualified Data.Graph.Inductive.Graph as FGL
 import qualified Data.Graph.Inductive.PatriciaTree as FGL
 import qualified Data.Graph.Haggle as H
@@ -30,7 +31,21 @@ graphNFA nfa = do
   let g = edgeLabeledDigraphToFGL (graph nfa)
       params = GV.nonClusteredParams
         { GV.fmtEdge = \(_, _, l) ->
-            [GV.Label (GV.StrLabel (T.pack l))]}
+            [GV.Label (GV.StrLabel (T.pack l))]
+        , GV.fmtNode = \(n, _) ->
+            let fillColor = if n == H.vertexId (startState nfa)
+                  then GV.DeepSkyBlue
+                  else GV.LightGray
+                (penWidth, penColor) =
+                  if n `elem` (H.vertexId <$> toList (finalStates nfa))
+                  then (3.0, GV.Green)
+                  else (1.0, GV.Black)
+            in [ GV.style GV.filled
+               , GV.fillColor fillColor
+               , GV.penWidth penWidth
+               , GV.penColor penColor
+               ]
+        }
       dot = GV.graphToDot params g
 
   void $ GV.runGraphviz dot GV.Pdf "graph.pdf"

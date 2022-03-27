@@ -5,7 +5,8 @@
 -- | A module providing a simple implementation of NFAs in terms of @haggle@
 -- graphs.
 module Regulate.NFA
-   ( NFA(..)
+   ( NFA, graph, alphabet, startState, finalStates
+   , mkNFA
    -- * Generating strings
    , generate
    , generate'
@@ -14,7 +15,6 @@ module Regulate.NFA
    , union
    , intersection
    , join
-   , Either3(..)
    , nfaMap
    ) where
 
@@ -37,11 +37,19 @@ import Data.STRef
 -- The vertices of the graph correspond to the states, and the labeled edges are
 -- transitions.
 data NFA sigma = NFA { graph :: EdgeLabeledGraph Digraph sigma
+                     , alphabet :: Set sigma
                      , startState :: Vertex
                      , finalStates :: Set Vertex
                      }
 
-nfaMap :: (sigma -> tau) -> NFA sigma -> NFA tau
+mkNFA :: Ord sigma
+      => EdgeLabeledGraph Digraph sigma
+      -> Vertex
+      -> Set Vertex
+      -> NFA sigma
+mkNFA g s finals = NFA g (Set.fromList (fromJust . edgeLabel g <$> edges g)) s finals
+
+nfaMap :: Ord tau => (sigma -> tau) -> NFA sigma -> NFA tau
 nfaMap f nfa = runST $ do
   g' <- newEdgeLabeledGraph newMDigraph
   vertexMapRef <- newSTRef Map.empty -- map from old vertices to new vertices
@@ -58,7 +66,7 @@ nfaMap f nfa = runST $ do
   forM_ (edges (graph nfa)) $ \e -> do
     addLabeledEdge g' (edgeSource e) (edgeDest e) (f (fromJust (edgeLabel (graph nfa) e)))
 
-  NFA
+  mkNFA
     <$> freeze g'
     <*> (fromJust <$> readSTRef startStateRef)
     <*> readSTRef finalStatesRef
@@ -116,17 +124,11 @@ union = undefined
 intersection :: NFA sigma -> NFA sigma -> NFA sigma
 intersection = undefined
 
-data Either3 a b c = Left3 a | Middle3 b | Right3 c
-  deriving (Show, Read, Eq, Ord)
-
 -- | Given two NFAs that operate on a common subset, produce an NFA whose
 -- alphabet is the union of the two alphabets, and whose language is exactly the
 -- strings that, when restricted to either of the two alphabets, are exactly the
 -- corresponding languages.
-join :: forall a b c . Ord b
-     => NFA (Either a b)
-     -> NFA (Either b c)
-     -> NFA (Either3 a b c)
+join :: Ord a => NFA a -> NFA a -> NFA a
 join nfa1 nfa2 = runST $ do
   let g1 = graph nfa1
       g2 = graph nfa2
@@ -159,36 +161,42 @@ join nfa1 nfa2 = runST $ do
 
   vertexMap <- readSTRef vertexMapRef
 
-  -- Create a map from all b labels to corresponding edges in g2.
-  let g2LeftEdgeMap :: Map.Map b (Set Edge)
-      g2LeftEdgeMap = foldr p Map.empty (edges g2)
-      p e m = case fromJust (edgeLabel g2 e) of
-        Left b -> Map.insertWith Set.union b (Set.singleton e) m
-        Right _ -> m
+  let sharedSymbols = alphabet nfa1 `Set.intersection` alphabet nfa2
 
-  forM_ (edges g1) $ \e -> case fromJust (edgeLabel g1 e) of
-    Left a -> forM_ (vertices g2) $ \v2 -> do
-      let src = vertexMap Map.! (edgeSource e, v2)
-          dst = vertexMap Map.! (edgeDest e, v2)
-      addLabeledEdge g src dst (Left3 a)
-    Right b -> case Map.lookup b g2LeftEdgeMap of
-      -- Look up the g2 edges with the same label, and add the corresponding
-      -- vertices.
-      Nothing -> return ()
-      Just es -> forM_ es $ \e' -> do
-        let src = vertexMap Map.! (edgeSource e, edgeSource e')
-            dst = vertexMap Map.! (edgeDest e, edgeDest e')
-        addLabeledEdge g src dst (Middle3 b)
+  -- Create a map from all shared labels to corresponding edges in g2.
+  let g2LeftEdgeMap = foldr p Map.empty (edges g2)
+      p e m = let a = fromJust (edgeLabel g2 e)
+              in if a `Set.member` sharedSymbols
+                 then Map.insertWith Set.union a (Set.singleton e) m
+                 else m
 
-  forM_ (edges g2) $ \e -> case fromJust (edgeLabel g2 e) of
-    Left _b -> return ()
-    Right c -> forM_ (vertices g1) $ \v1 -> do
-      let src = vertexMap Map.! (v1, edgeSource e)
-          dst = vertexMap Map.! (v1, edgeDest e)
-      addLabeledEdge g src dst (Right3 c)
+  forM_ (edges g1) $ \e -> do
+    let a = fromJust (edgeLabel g1 e)
+    case a `Set.member` sharedSymbols of
+      False -> forM_ (vertices g2) $ \v2 -> do
+        let src = vertexMap Map.! (edgeSource e, v2)
+            dst = vertexMap Map.! (edgeDest e, v2)
+        addLabeledEdge g src dst a
+      True -> case Map.lookup a g2LeftEdgeMap of
+        -- Look up the g2 edges with the same label, and add the corresponding
+        -- vertices.
+        Nothing -> return ()
+        Just es -> forM_ es $ \e' -> do
+          let src = vertexMap Map.! (edgeSource e, edgeSource e')
+              dst = vertexMap Map.! (edgeDest e, edgeDest e')
+          addLabeledEdge g src dst a
+
+  forM_ (edges g2) $ \e -> do
+    let a = fromJust (edgeLabel g2 e)
+    case a `Set.member` sharedSymbols of
+      True -> return ()
+      False  -> forM_ (vertices g1) $ \v1 -> do
+        let src = vertexMap Map.! (v1, edgeSource e)
+            dst = vertexMap Map.! (v1, edgeDest e)
+        addLabeledEdge g src dst a
 
   start <- readSTRef startRef
   finals <- readSTRef finalsRef
 
   g' <- freeze g
-  return $ NFA g' (fromJust start) finals
+  return $ mkNFA g' (fromJust start) finals
