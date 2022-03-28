@@ -3,4 +3,4 @@ packages: .
 source-repository-package
     type: git
     location: git@github.com:benjaminselfridge/haggle.git
-    tag: 4cd0043ac9f0c0346f2ca3ddc06e3ec6f5b90541
+    tag: a62c68bea977fd07144596a0534f0e2b4eaf7cc7
