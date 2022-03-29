@@ -14,6 +14,7 @@ module Regulate.NFA.Haggle
    , generate
    , generate'
    , generate1
+   , generateAll
    -- * NFA combinators
    , join
    , nfaMap
@@ -24,8 +25,9 @@ import Control.Monad.ST
 import Data.Foldable (forM_)
 import Data.Graph.Haggle
 import Data.Graph.Haggle.Algorithms.DFS
+import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, catMaybes)
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Set (Set)
@@ -50,7 +52,9 @@ reduceGraph :: Vertex
             -- ^ final states
             -> LabeledMGraph MBiDigraph nl sigma (ST s)
             -- ^ The graph
-            -> ST s (LabeledMGraph MBiDigraph nl sigma (ST s))
+            -> ST s ( LabeledMGraph MBiDigraph nl sigma (ST s)
+                    , Map Vertex Vertex
+                    )
 reduceGraph start finals gOld = do
   g' <- freeze gOld
   let reachables = Set.fromList (dfs g' [start])
@@ -74,7 +78,7 @@ reduceGraph start finals gOld = do
       when (edgeDest e' `Set.member` keepStates) $
         void $ addLabeledEdge gNew vSrc vDest (fromJust $ edgeLabel g' e')
 
-  return gNew
+  return (gNew, vertexMap)
 
 mkNFA :: (Ord sigma)
       => LabeledGraph BiDigraph nl sigma
@@ -151,10 +155,24 @@ generate :: (Monoid m, Ord m)
          -> NFA nl m
          -> [m]
 generate n nfa =
-  [ s | let (pairs, _) = generate' (graph nfa) Set.empty (Seq.singleton (startState nfa, mempty)) !! n
+  [ s | let (pairs, _) = generate' (graph nfa) (Set.singleton (startState nfa, mempty)) (Seq.singleton (startState nfa, mempty)) !! n
       , (q, s) <- Set.toList pairs
       , q `Set.member` finalStates nfa
       ]
+
+-- | Generate the entire list of strings from an NFA. This is an exhaustive
+-- breadth-first search that only stops when it cannot generate new strings;
+-- therefore if the NFA has cycles, it may never terminate.
+generateAll :: (Monoid m, Ord m) => NFA nl m -> [m]
+generateAll nfa =
+  [ s | let (pairs, _) = term $ generate' (graph nfa) (Set.singleton (startState nfa, mempty)) (Seq.singleton (startState nfa, mempty))
+      , (q, s) <- Set.toList pairs
+      , q `Set.member` finalStates nfa
+      ]
+
+  where term (a:a':as) | a == a' = a
+                       | otherwise = term (a':as)
+        term _ = error "generateAll"
 
 -- | Given two NFA nls that operate on a common subset, produce an NFA nl whose
 -- alphabet is the union of the two alphabets, and whose language is exactly the
@@ -232,5 +250,8 @@ join nfa1 nfa2 = runST $ do
   start <- readSTRef startRef
   finals <- readSTRef finalsRef
 
-  g' <- freeze =<< reduceGraph (fromJust start) finals g
-  return $ mkNFA g' (fromJust start) finals
+  (g'Mut, reduceMap) <- reduceGraph (fromJust start) finals g
+  g' <- freeze g'Mut
+  let start' = fromJust (Map.lookup (fromJust start) reduceMap)
+      finals' = Set.fromList (catMaybes (flip Map.lookup reduceMap <$> Set.toList finals))
+  return $ mkNFA g' start' finals'

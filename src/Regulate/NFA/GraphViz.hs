@@ -8,7 +8,6 @@ import Regulate.NFA.Haggle
 import Control.Monad (void)
 import Data.Foldable (toList)
 import qualified Data.Graph.Haggle as H
-import qualified Data.Graph.Haggle.Internal.Basic as H
 import qualified Data.GraphViz as GV
 import qualified Data.GraphViz.Attributes.Complete as GV
 import qualified Data.Text.Lazy as T

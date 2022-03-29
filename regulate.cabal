@@ -41,6 +41,8 @@ library
                       graphviz,
                       haggle,
                       parameterized-utils,
+                      primitive,
+                      ref-tf,
                       text,
                       unicode-tricks
     ghc-options:      -Wall

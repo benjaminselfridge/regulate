@@ -2,5 +2,5 @@ packages: .
 
 source-repository-package
     type: git
-    location: git@github.com:benjaminselfridge/haggle.git
-    tag: a62c68bea977fd07144596a0534f0e2b4eaf7cc7
+    location: git@github.com:travitch/haggle.git
+    tag: 440dcc1c1d8322faa770ea470ba55031b1407adf
