@@ -3,7 +3,7 @@
 -- | Module for rendering NFAs via GraphViz.
 module Regulate.NFA.GraphViz where
 
-import Regulate.NFA.Haggle
+import Regulate.NFA
 
 import Control.Monad (void)
 import Data.Foldable (toList)

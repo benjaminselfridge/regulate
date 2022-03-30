@@ -7,11 +7,11 @@ module Regulate.NFA.Mutable
   , MNFA
   , addState
   , addTransition
+  , transitionsOut
   , finishNFA
   -- * Regular expression operations
+  , symbol
   , union
-  , cat
-  , star
   ) where
 
 import qualified Regulate.NFA.Haggle as H
@@ -65,49 +65,86 @@ addTransition src dst s = do
   g <- gets nbsGraph
   void $ lift $ addLabeledEdge g src dst s
 
+transitionsOut :: Vertex -> NFABuilder s nl sigma [(Vertex, sigma)]
+transitionsOut q = do
+  g <- gets nbsGraph
+  es <- lift $ getOutEdges g q
+  forM es $ \e -> do
+    s <- lift $ unsafeGetEdgeLabel g e
+    return (edgeDest e, s)
+
 finishNFA :: Vertex -> Set Vertex -> MNFA s nl sigma
 finishNFA start finals = return $ NFAData start finals
 
--- | Represent epsilon-transitions as 'Nothing'.
-epsilon :: Maybe a
-epsilon = Nothing
+-- | Create an NFA that accepts a single symbol.
+symbol :: Enum nl => sigma -> MNFA s nl sigma
+symbol s = do
+  q0 <- addState
+  qf <- addState
 
+  addTransition q0 qf s
+
+  finishNFA q0 (Set.singleton qf)
+
+-- | Take the union of two NFAs.
 union :: Enum nl
-      => MNFA s nl (Maybe sigma)
-      -> MNFA s nl (Maybe sigma)
-      -> MNFA s nl (Maybe sigma)
+      => MNFA s nl sigma
+      -> MNFA s nl sigma
+      -> MNFA s nl sigma
 union mnfa1 mnfa2 = do
   nfa1 <- mnfa1
   nfa2 <- mnfa2
 
   q0 <- addState
 
-  addTransition q0 (nfaStart nfa1) epsilon
-  addTransition q0 (nfaStart nfa2) epsilon
+  -- For every transition out of either start state, add a transition from q0
+  -- to the destination on the same symbol.
+  nexts1 <- transitionsOut (nfaStart nfa1)
+  nexts2 <- transitionsOut (nfaStart nfa2)
+  forM_ (nexts1 ++ nexts2) $ \(q_next, s) -> do
+    addTransition q0 q_next s
 
   finishNFA q0 (nfaFinals nfa1 `Set.union` nfaFinals nfa2)
 
-cat :: Enum nl
-    => MNFA s nl (Maybe sigma)
-    -> MNFA s nl (Maybe sigma)
-    -> MNFA s nl (Maybe sigma)
-cat mnfa1 mnfa2 = do
-  nfa1 <- mnfa1
-  nfa2 <- mnfa2
+-- -- | Take the union of two NFAs.
+-- union :: Enum nl
+--       => MNFA s nl (Maybe sigma)
+--       -> MNFA s nl (Maybe sigma)
+--       -> MNFA s nl (Maybe sigma)
+-- union mnfa1 mnfa2 = do
+--   nfa1 <- mnfa1
+--   nfa2 <- mnfa2
 
-  forM_ (nfaFinals nfa1) $ \f -> addTransition f (nfaStart nfa2) epsilon
+--   q0 <- addState
 
-  finishNFA (nfaStart nfa1) (nfaFinals nfa2)
+--   addTransition q0 (nfaStart nfa1) epsilon
+--   addTransition q0 (nfaStart nfa2) epsilon
 
-star :: Enum nl
-     => MNFA s nl (Maybe sigma)
-     -> MNFA s nl (Maybe sigma)
-star mnfa = do
-  nfa <- mnfa
+--   finishNFA q0 (nfaFinals nfa1 `Set.union` nfaFinals nfa2)
 
-  q0 <- addState
+-- -- | Concatenate two NFAs.
+-- cat :: Enum nl
+--     => MNFA s nl (Maybe sigma)
+--     -> MNFA s nl (Maybe sigma)
+--     -> MNFA s nl (Maybe sigma)
+-- cat mnfa1 mnfa2 = do
+--   nfa1 <- mnfa1
+--   nfa2 <- mnfa2
 
-  addTransition q0 (nfaStart nfa) epsilon
-  forM_ (nfaFinals nfa) $ \f -> addTransition f q0 epsilon
+--   forM_ (nfaFinals nfa1) $ \f -> addTransition f (nfaStart nfa2) epsilon
 
-  finishNFA q0 (Set.insert q0 (nfaFinals nfa))
+--   finishNFA (nfaStart nfa1) (nfaFinals nfa2)
+
+-- -- | Start an NFA.
+-- star :: Enum nl
+--      => MNFA s nl (Maybe sigma)
+--      -> MNFA s nl (Maybe sigma)
+-- star mnfa = do
+--   nfa <- mnfa
+
+--   q0 <- addState
+
+--   addTransition q0 (nfaStart nfa) epsilon
+--   forM_ (nfaFinals nfa) $ \f -> addTransition f q0 epsilon
+
+--   finishNFA q0 (Set.insert q0 (nfaFinals nfa))

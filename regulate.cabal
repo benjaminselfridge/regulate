@@ -30,6 +30,7 @@ library
                       Regulate.NFA.Examples.ATM
                       Regulate.NFA.Examples.DataFlow
                       Regulate.NFA.Examples.Helpers
+                      Regulate.NFA.Examples.Misc
                       Regulate.NFA.GraphViz
                       Regulate.Regex
 
