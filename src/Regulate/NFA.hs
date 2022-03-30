@@ -6,8 +6,6 @@
 module Regulate.NFA
   ( NFA, graph, alphabet, startState, finalStates
   , NFABuilder
-  , Generatable(..)
-  , SimpleLabel(..)
   , buildNFA
   , MNFA
   , addState
@@ -41,42 +39,22 @@ import Data.STRef
 --
 -- The vertices of the graph correspond to the states, and the labeled edges are
 -- transitions.
-data NFA nl sigma = NFA { graph :: LabeledGraph BiDigraph nl sigma
+data NFA sigma = NFA { graph :: EdgeLabeledGraph BiDigraph sigma
                         , alphabet :: Set sigma
                         , startState :: Vertex
                         , finalStates :: Set Vertex
                         }
 
-class Generatable g where
-  type Generator g :: *
-  gen :: Generator g -> (g, Generator g)
+data NFABuilderState s sigma =
+  NFABuilderState { nbsGraph :: EdgeLabeledMGraph MBiDigraph sigma (ST s) }
 
-data SimpleLabel = IntLabel Int | ListLabel [Int]
-
-instance Generatable SimpleLabel where
-  type Generator SimpleLabel = Int
-  gen i = (IntLabel i, i+1)
-
-instance Semigroup SimpleLabel where
-  IntLabel i <> IntLabel j = ListLabel [i, j]
-  IntLabel i <> ListLabel js = ListLabel (i:js)
-  ListLabel is <> IntLabel j = ListLabel (is++[j])
-  ListLabel is <> ListLabel js = ListLabel (is++js)
-
-data NFABuilderState s nl sigma =
-  NFABuilderState { nbsLabelGen :: STRef s (Generator nl)
-                  , nbsGraph :: LabeledMGraph MBiDigraph nl sigma (ST s)
-                  }
-
-type NFABuilder s nl sigma a = StateT (NFABuilderState s nl sigma) (ST s) a
+type NFABuilder s sigma a = StateT (NFABuilderState s sigma) (ST s) a
 
 buildNFA :: Ord sigma
-         => Generator nl
-         -> (forall s . MNFA s nl sigma) -> NFA nl sigma
-buildNFA startLabel mnfa = runST $ do
-  lg <- newSTRef startLabel
-  newg <- newLabeledGraph newMBiDigraph
-  flip evalStateT (NFABuilderState lg newg) $ do
+         => (forall s . MNFA s sigma) -> NFA sigma
+buildNFA mnfa = runST $ do
+  newg <- newEdgeLabeledGraph newMBiDigraph
+  flip evalStateT (NFABuilderState newg) $ do
     nfa <- mnfa
     g <- gets nbsGraph
     (g', vertexMap) <- lift $ reduceGraph (nfaStart nfa) (nfaFinals nfa) g
@@ -88,14 +66,11 @@ buildNFA startLabel mnfa = runST $ do
 unsafeEdgeLabel :: HasEdgeLabel g => g -> Edge -> EdgeLabel g
 unsafeEdgeLabel g e = fromJust (edgeLabel g e)
 
-unsafeVertexLabel :: HasVertexLabel g => g -> Vertex -> VertexLabel g
-unsafeVertexLabel g v = fromJust (vertexLabel g v)
-
 mkNFA :: (Ord sigma)
-      => LabeledGraph BiDigraph nl sigma
+      => EdgeLabeledGraph BiDigraph sigma
       -> Vertex
       -> Set Vertex
-      -> NFA nl sigma
+      -> NFA sigma
 mkNFA g s finals = NFA g (Set.fromList (unsafeEdgeLabel g <$> edges g)) s finals
 
 -- TODO: fix this, we don't need to freeze the old one.
@@ -103,9 +78,9 @@ reduceGraph :: Vertex
             -- ^ start state
             -> Set Vertex
             -- ^ final states
-            -> LabeledMGraph MBiDigraph nl sigma (ST s)
+            -> EdgeLabeledMGraph MBiDigraph sigma (ST s)
             -- ^ The graph
-            -> ST s ( LabeledMGraph MBiDigraph nl sigma (ST s)
+            -> ST s ( EdgeLabeledMGraph MBiDigraph sigma (ST s)
                     , Map Vertex Vertex
                     )
 reduceGraph start finals gOld = do
@@ -114,12 +89,12 @@ reduceGraph start finals gOld = do
       finishables = Set.fromList (rdfs g' (Set.toList finals))
       keepStates = reachables `Set.intersection` finishables
 
-  gNew <- newLabeledGraph newMBiDigraph
+  gNew <- newEdgeLabeledGraph newMBiDigraph
 
   -- add all vertices, noting how the old ones map to new ones
   vertexMapRef <- newSTRef Map.empty
   forM_ keepStates $ \v' -> do
-    v <- addLabeledVertex gNew (unsafeVertexLabel g' v')
+    v <- addVertex gNew
     modifySTRef vertexMapRef (Map.insert v' v)
 
   vertexMap <- readSTRef vertexMapRef
@@ -140,37 +115,20 @@ data NFAData sigma = NFAData { nfaStates :: Set Vertex
                              , nfaAlphabet :: Set sigma
                              }
 
-type MNFA s nl sigma = NFABuilder s nl sigma (NFAData sigma)
-
-getNextLabel :: Generatable nl => NFABuilder s nl sigma nl
-getNextLabel = do
-  lgRef <- gets nbsLabelGen
-  lg <- lift $ readSTRef lgRef
-  let (l', lg') = gen lg
-  lift $ writeSTRef lgRef lg'
-  return l'
+type MNFA s sigma = NFABuilder s sigma (NFAData sigma)
 
 -- | Add a new state to the NFA, generating a new label for it.
-addState :: Generatable nl => NFABuilder s nl sigma Vertex
+addState :: NFABuilder s sigma Vertex
 addState = do
   g <- gets nbsGraph
-  i <- getNextLabel
-  v <- lift $ addLabeledVertex g i
-  return v
+  lift $ addVertex g
 
--- | Add a new state to the NFA with particular label.
-addStateWithLabel :: nl -> NFABuilder s nl sigma Vertex
-addStateWithLabel nl = do
-  g <- gets nbsGraph
-  v <- lift $ addLabeledVertex g nl
-  return v
-
-addTransition :: Vertex -> Vertex -> sigma -> NFABuilder s nl sigma Edge
+addTransition :: Vertex -> Vertex -> sigma -> NFABuilder s sigma Edge
 addTransition src dst s = do
   g <- gets nbsGraph
   lift $ fromJust <$> addLabeledEdge g src dst s
 
-transitionsIn :: Vertex -> NFABuilder s nl sigma [(Vertex, sigma)]
+transitionsIn :: Vertex -> NFABuilder s sigma [(Vertex, sigma)]
 transitionsIn q = do
   g <- gets nbsGraph
   es <- lift $ getInEdges g q
@@ -178,7 +136,7 @@ transitionsIn q = do
     s <- lift $ unsafeGetEdgeLabel g e
     return (edgeSource e, s)
 
-transitionsOut :: Vertex -> NFABuilder s nl sigma [(Vertex, sigma)]
+transitionsOut :: Vertex -> NFABuilder s sigma [(Vertex, sigma)]
 transitionsOut q = do
   g <- gets nbsGraph
   es <- lift $ getOutEdges g q
@@ -186,12 +144,7 @@ transitionsOut q = do
     s <- lift $ unsafeGetEdgeLabel g e
     return (edgeDest e, s)
 
-stateLabel :: Vertex -> NFABuilder s nl sigma nl
-stateLabel v = do
-  g <- gets nbsGraph
-  lift $ fromJust <$> getVertexLabel g v
-
-transitionSymbol :: Edge -> NFABuilder s nl sigma sigma
+transitionSymbol :: Edge -> NFABuilder s sigma sigma
 transitionSymbol e = do
   g <- gets nbsGraph
   lift $ fromJust <$> getEdgeLabel g e
@@ -201,12 +154,12 @@ finishNFA :: Set Vertex
           -> Vertex
           -> Set Vertex
           -> Set sigma
-          -> MNFA s nl sigma
+          -> MNFA s sigma
 finishNFA states transitions start finals alpha =
   return $ NFAData states transitions start finals alpha
 
 -- | Create an NFA that accepts a single symbol.
-symbol :: Generatable nl => sigma -> MNFA s nl sigma
+symbol :: sigma -> MNFA s sigma
 symbol s = do
   q0 <- addState
   qf <- addState
@@ -221,10 +174,10 @@ symbol s = do
     (Set.singleton s)
 
 -- | Take the union of two NFAs.
-union :: (Generatable nl, Ord sigma)
-      => MNFA s nl sigma
-      -> MNFA s nl sigma
-      -> MNFA s nl sigma
+union :: (Ord sigma)
+      => MNFA s sigma
+      -> MNFA s sigma
+      -> MNFA s sigma
 union mnfa1 mnfa2 = do
   nfa1 <- mnfa1
   nfa2 <- mnfa2
@@ -248,10 +201,10 @@ union mnfa1 mnfa2 = do
     (nfaAlphabet nfa1 `Set.union` nfaAlphabet nfa2)
 
 -- | Concatenate two NFAs.
-cat :: (Generatable nl, Ord sigma)
-    => MNFA s nl sigma
-    -> MNFA s nl sigma
-    -> MNFA s nl sigma
+cat :: Ord sigma
+    => MNFA s sigma
+    -> MNFA s sigma
+    -> MNFA s sigma
 cat mnfa1 mnfa2 = do
   nfa1 <- mnfa1
   nfa2 <- mnfa2
@@ -273,9 +226,9 @@ cat mnfa1 mnfa2 = do
     (nfaAlphabet nfa1 `Set.union` nfaAlphabet nfa2)
 
 -- | Star an NFA.
-star :: (Generatable nl, Ord sigma)
-     => MNFA s nl sigma
-     -> MNFA s nl sigma
+star :: Ord sigma
+     => MNFA s sigma
+     -> MNFA s sigma
 star mnfa = do
   nfa <- mnfa
 
@@ -306,12 +259,12 @@ star mnfa = do
 
 -- | Join two NFAs on their shared symbols.
 
--- | Given two NFA nls that operate on a common subset, produce an NFA nl whose
+-- | Given two NFAs that operate on a common subset, produce an NFA nl whose
 -- alphabet is the union of the two alphabets, and whose language is exactly the
 -- strings that, when restricted to either of the two alphabets, are exactly the
 -- corresponding languages.
-join :: (Generatable nl, Semigroup nl, Ord sigma)
-     => MNFA s nl sigma -> MNFA s nl sigma -> MNFA s nl sigma
+join :: Ord sigma
+     => MNFA s sigma -> MNFA s sigma -> MNFA s sigma
 join mnfa1 mnfa2 = do
   nfa1 <- mnfa1
   nfa2 <- mnfa2
@@ -325,8 +278,7 @@ join mnfa1 mnfa2 = do
   -- First, add all the new vertices and build up the vertex map.
   states <- forM (toList $ nfaStates nfa1) $ \q1 -> do
     forM (toList $ nfaStates nfa2) $ \q2 -> do
-      l <- (<>) <$> stateLabel q1 <*> stateLabel q2
-      q <- addStateWithLabel l
+      q <- addState
 
       -- Add new state to vertex map
       lift $ modifySTRef stateMapRef (Map.insert (q1, q2) q)

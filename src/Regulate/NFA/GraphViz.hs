@@ -13,26 +13,11 @@ import Data.Foldable (toList)
 import qualified Data.Graph.Haggle as H
 import qualified Data.GraphViz as GV
 import qualified Data.GraphViz.Attributes.Complete as GV
-import Data.List (intercalate)
 import Data.Maybe (fromJust)
 import qualified Data.Text.Lazy as T
 
-class StateLabel s where
-  stateLabel :: s -> String
-
-subInt :: Int -> [Char]
-subInt i = fromJust . toSub <$> show i
-
-instance StateLabel Int where
-  stateLabel i = 'q' : subInt i
-
-instance StateLabel [Int] where
-  stateLabel is = show' $ ('q':) . subInt <$> is
-    where show' s = '(' : intercalate "," s ++ ")"
-
-instance StateLabel SimpleLabel where
-  stateLabel (IntLabel i) = stateLabel i
-  stateLabel (ListLabel is) = stateLabel is
+stateLabel :: Int -> String
+stateLabel i = 'q' : (fromJust . toSub <$> show i)
 
 class SymbolLabel s where
   symbolLabel :: s -> String
@@ -49,12 +34,9 @@ eventLabel = map (toLower . space) . show
   where space '_' = ' '
         space c = c
 
-graphNFA :: (StateLabel q, SymbolLabel sigma)
-         => NFA q sigma -> IO ()
+graphNFA :: SymbolLabel sigma => NFA sigma -> IO ()
 graphNFA nfa = do
-  let verticesWithLabels = [ (v, l) | v <- H.vertices (graph nfa)
-                                    , let Just l = H.vertexLabel (graph nfa) v ]
-      edgesWithLabels =
+  let edgesWithLabels =
         [ (H.edgeSource e, H.edgeDest e, l)
         | e <- H.edges (graph nfa)
         , let Just l = H.edgeLabel (graph nfa) e
@@ -62,7 +44,7 @@ graphNFA nfa = do
       params = GV.nonClusteredParams
         { GV.fmtEdge = \(_, _, l) ->
             [GV.Label (GV.StrLabel (T.pack $ " " ++ symbolLabel l ++ " "))]
-        , GV.fmtNode = \(n, l) ->
+        , GV.fmtNode = \(n, _l) ->
             let fillColor = if n == startState nfa
                   then GV.DeepSkyBlue
                   else GV.LightGray
@@ -74,9 +56,9 @@ graphNFA nfa = do
                , GV.fillColor fillColor
                , GV.penWidth penWidth
                , GV.penColor penColor
-               , GV.toLabel (stateLabel l)
+               , GV.toLabel (stateLabel (H.vertexId n))
                ]
         }
-      dot = GV.graphElemsToDot params verticesWithLabels edgesWithLabels
+      dot = GV.graphElemsToDot params [(v,v) | v <- H.vertices (graph nfa)] edgesWithLabels
 
   void $ GV.runGraphviz (H.vertexId <$> dot) GV.Png "graph.png"
