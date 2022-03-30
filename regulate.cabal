@@ -24,13 +24,6 @@ extra-source-files: CHANGELOG.md
 library
     exposed-modules:  Regulate.Conversion
                       Regulate.NFA
-                      Regulate.NFA.Haggle
-                      Regulate.NFA.Mutable
-                      Regulate.NFA.Examples
-                      Regulate.NFA.Examples.ATM
-                      Regulate.NFA.Examples.DataFlow
-                      Regulate.NFA.Examples.Helpers
-                      Regulate.NFA.Examples.Misc
                       Regulate.NFA.GraphViz
                       Regulate.Regex
 
