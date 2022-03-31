@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TupleSections #-}
 
 -- | Module for rendering NFAs via GraphViz.
@@ -62,3 +63,6 @@ graphNFA nfa = do
       dot = GV.graphElemsToDot params [(v,v) | v <- H.vertices (graph nfa)] edgesWithLabels
 
   void $ GV.runGraphviz (H.vertexId <$> dot) GV.Png "graph.png"
+
+graphMNFA :: (SymbolLabel sigma, Ord sigma) => (forall s . MNFA s sigma) -> IO ()
+graphMNFA g = graphNFA (buildNFA g)
