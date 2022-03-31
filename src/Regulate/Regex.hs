@@ -151,7 +151,7 @@ generate (Cat r s) = runOmega [ x ++ y | x <- each (generate r)
 generate (Plus r) = diagonal (generate . cat <$> tau r)
 
 -- | "Scope" a regular expression by replacing all the plus operators with
--- `upto1` operators.
+-- @upto1@ operators.
 scope :: Int
          -- ^ how many times to repeat each + operator (must be >0)
       -> Regex a
