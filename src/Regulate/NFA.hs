@@ -4,17 +4,27 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 
+-- | Implementation of non-deterministic finite automata.
+--
+-- Clients of this API are encouraged to build up NFAs using the regular
+-- expression operations, but manual construction is also possible via the
+-- 'NFABuilder' monad and corresponding functions.
 module Regulate.NFA
-  ( NFA, graph, alphabet, startState, finalStates
+  (
+    -- * NFAs
+    NFA, graph, alphabet, startState, finalStates
+    -- * Constructing NFAs
   , NFABuilder
+  , NFABuilderState
   , buildNFA
   , MNFA
+  , NFAData(..)
   , addState
   , addTransition
   , transitionsOut
   , transitionsIn
   , finishNFA
-  -- * Regular expression operations
+    -- * Regular expression operations
   , empty
   , epsilon
   , symbol
@@ -25,7 +35,7 @@ module Regulate.NFA
   , upto
   , star
   , join
-  -- * Generating strings
+    -- * Generating strings
   , generate
   , generateAll
   ) where
@@ -51,16 +61,41 @@ import Data.STRef
 -- The vertices of the graph correspond to the states, and the labeled edges are
 -- transitions.
 data NFA sigma = NFA { graph :: EdgeLabeledGraph BiDigraph sigma
+                       -- ^ The NFA's underling @haggle@ graph.
                      , alphabet :: Set sigma
+                       -- ^ The NFA's alphabet.
                      , startState :: Vertex
+                       -- ^ Starting state.
                      , finalStates :: Set Vertex
+                       -- ^ Final states.
                      }
 
+mkNFA :: (Ord sigma)
+      => EdgeLabeledGraph BiDigraph sigma
+      -> Vertex
+      -> Set Vertex
+      -> NFA sigma
+mkNFA g s finals = NFA g (Set.fromList (unsafeEdgeLabel g <$> edges g)) s finals
+
+-- | The state for the 'NFABuilder' monad. Don't mess with this directly.
 data NFABuilderState s sigma =
   NFABuilderState { nbsGraph :: EdgeLabeledMGraph MBiDigraph sigma (ST s) }
 
+-- | Monad for building NFAs.
 type NFABuilder s sigma a = StateT (NFABuilderState s sigma) (ST s) a
 
+-- | Basic data for an NFA.
+data NFAData sigma = NFAData { nfaStates :: Set Vertex
+                             , nfaTransitions :: Set Edge
+                             , nfaStart :: Vertex
+                             , nfaFinals :: Set Vertex
+                             , nfaAlphabet :: Set sigma
+                             }
+
+-- | A constructed, mutable MNFA.
+type MNFA s sigma = NFABuilder s sigma (NFAData sigma)
+
+-- | Run an MNFA action to produce a completed NFA.
 buildNFA :: Ord sigma
          => (forall s . MNFA s sigma) -> NFA sigma
 buildNFA mnfa = runST $ do
@@ -81,14 +116,9 @@ buildNFA mnfa = runST $ do
 unsafeEdgeLabel :: HasEdgeLabel g => g -> Edge -> EdgeLabel g
 unsafeEdgeLabel g e = fromJust (edgeLabel g e)
 
-mkNFA :: (Ord sigma)
-      => EdgeLabeledGraph BiDigraph sigma
-      -> Vertex
-      -> Set Vertex
-      -> NFA sigma
-mkNFA g s finals = NFA g (Set.fromList (unsafeEdgeLabel g <$> edges g)) s finals
-
 -- TODO: fix this, we don't need to freeze the old one.
+-- | Remove unreachable and unfinishable nodes (always preserving the starting
+-- node).
 reduceGraph :: Vertex
             -- ^ start state
             -> Set Vertex
@@ -123,26 +153,20 @@ reduceGraph start finals gOld = do
 
   return (gNew, vertexMap)
 
-data NFAData sigma = NFAData { nfaStates :: Set Vertex
-                             , nfaTransitions :: Set Edge
-                             , nfaStart :: Vertex
-                             , nfaFinals :: Set Vertex
-                             , nfaAlphabet :: Set sigma
-                             }
-
-type MNFA s sigma = NFABuilder s sigma (NFAData sigma)
-
--- | Add a new state to the NFA, generating a new label for it.
+-- | Add a new state to the NFA graph.
 addState :: NFABuilder s sigma Vertex
 addState = do
   g <- gets nbsGraph
   lift $ addVertex g
 
+-- | Add a new transition to the NFA graph.
 addTransition :: Vertex -> Vertex -> sigma -> NFABuilder s sigma Edge
 addTransition src dst s = do
   g <- gets nbsGraph
   lift $ fromJust <$> addLabeledEdge g src dst s
 
+-- | Given a state, get a list of all the states it can transition to, along
+-- with the corresponding transition symbol.
 transitionsIn :: Vertex -> NFABuilder s sigma [(Vertex, sigma)]
 transitionsIn q = do
   g <- gets nbsGraph
@@ -151,6 +175,8 @@ transitionsIn q = do
     s <- lift $ unsafeGetEdgeLabel g e
     return (edgeSource e, s)
 
+-- | Given a state, get a list of all the states that can transition to it,
+-- along with the corresponding transition symbol.
 transitionsOut :: Vertex -> NFABuilder s sigma [(Vertex, sigma)]
 transitionsOut q = do
   g <- gets nbsGraph
@@ -159,11 +185,14 @@ transitionsOut q = do
     s <- lift $ unsafeGetEdgeLabel g e
     return (edgeDest e, s)
 
+-- | Given a transition, get that transition's symbol.
 transitionSymbol :: Edge -> NFABuilder s sigma sigma
 transitionSymbol e = do
   g <- gets nbsGraph
   lift $ fromJust <$> getEdgeLabel g e
 
+-- | Finish constructing an NFA. You must manually add all of the states that
+-- belong to this NFA; this function does not check that!
 finishNFA :: Set Vertex
           -- ^ All the states in this NFA
           -> Set Edge
@@ -275,6 +304,7 @@ pow :: Ord sigma => Int -> MNFA s sigma -> MNFA s sigma
 pow i _ | i <= 0 = epsilon
 pow i mnfa = mnfa `cat` (pow (i-1) mnfa)
 
+-- | Like 'pow', but accepts w^0, w^1, ..., w^n.
 upto :: Ord sigma => Int -> MNFA s sigma -> MNFA s sigma
 upto i _ | i <= 0 = epsilon
 upto i mnfa = mnfa `cat` (epsilon `union` upto (i-1) mnfa)

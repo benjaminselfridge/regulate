@@ -3,7 +3,12 @@
 {-# LANGUAGE TupleSections #-}
 
 -- | Module for rendering NFAs via GraphViz.
-module Regulate.NFA.GraphViz where
+module Regulate.NFA.GraphViz
+  ( graphNFA
+  , graphMNFA
+  , SymbolLabel(..)
+  , eventLabel
+  ) where
 
 import Regulate.NFA
 
@@ -20,6 +25,9 @@ import qualified Data.Text.Lazy as T
 stateLabel :: Int -> String
 stateLabel i = 'q' : (fromJust . toSub <$> show i)
 
+-- | Class for mapping transition symbols to graphviz edge labels. Implement
+-- this if you want to graph an NFA with custom events (i.e. anything besides
+-- 'Char' or 'String').
 class SymbolLabel s where
   symbolLabel :: s -> String
 
@@ -29,14 +37,17 @@ instance SymbolLabel Char where
 instance SymbolLabel String where
   symbolLabel = id
 
--- | for creating SymbolLabel instances
+-- | Shows an object, converts all characters to lowercase, and replaces
+-- underscores with spaces. This can be handy for writing 'SymbolLabel'
+-- instances.
 eventLabel :: Show e => e -> String
 eventLabel = map (toLower . space) . show
   where space '_' = ' '
         space c = c
 
-graphNFA :: SymbolLabel sigma => NFA sigma -> IO ()
-graphNFA nfa = do
+-- | Graph an 'NFA' and write it to a PNG file.
+graphNFA :: SymbolLabel sigma => FilePath -> NFA sigma -> IO ()
+graphNFA path nfa = do
   let edgesWithLabels =
         [ (H.edgeSource e, H.edgeDest e, l)
         | e <- H.edges (graph nfa)
@@ -62,7 +73,9 @@ graphNFA nfa = do
         }
       dot = GV.graphElemsToDot params [(v,v) | v <- H.vertices (graph nfa)] edgesWithLabels
 
-  void $ GV.runGraphviz (H.vertexId <$> dot) GV.Png "graph.png"
+  void $ GV.runGraphviz (H.vertexId <$> dot) GV.Png path
 
-graphMNFA :: (SymbolLabel sigma, Ord sigma) => (forall s . MNFA s sigma) -> IO ()
-graphMNFA g = graphNFA (buildNFA g)
+-- | Build and graph an 'MNFA' and write it to a PNG file.
+graphMNFA :: (SymbolLabel sigma, Ord sigma)
+          => FilePath -> (forall s . MNFA s sigma) -> IO ()
+graphMNFA path g = graphNFA path (buildNFA g)
