@@ -95,7 +95,8 @@ data NFAData sigma = NFAData { nfaStates :: Set Vertex
 -- | A constructed, mutable MNFA.
 type MNFA s sigma = NFABuilder s sigma (NFAData sigma)
 
--- | Run an MNFA action to produce a completed NFA.
+-- | Run an MNFA action to produce a completed NFA. This also reduces the
+-- resulting graph, getting rid of unreachable/unfinishable states.
 buildNFA :: Ord sigma
          => (forall s . MNFA s sigma) -> NFA sigma
 buildNFA mnfa = runST $ do
@@ -116,10 +117,11 @@ buildNFA mnfa = runST $ do
 unsafeEdgeLabel :: HasEdgeLabel g => g -> Edge -> EdgeLabel g
 unsafeEdgeLabel g e = fromJust (edgeLabel g e)
 
--- TODO: fix this, we don't need to freeze the old one.
 -- | Remove unreachable and unfinishable nodes (always preserving the starting
--- node).
-reduceGraph :: Vertex
+-- node), and remove all duplicate edges (edges with the same label, source, and
+-- destination vertices).
+reduceGraph :: Ord sigma
+            => Vertex
             -- ^ start state
             -> Set Vertex
             -- ^ final states
@@ -143,15 +145,34 @@ reduceGraph start finals gOld = do
     modifySTRef vertexMapRef (Map.insert v' v)
 
   vertexMap <- readSTRef vertexMapRef
+  edgeSetRef <- newSTRef Set.empty
   -- add all the needed edges
   forM_ keepStates $ \v' -> do
     let vSrc = fromJust $ Map.lookup v' vertexMap
     forM_ (outEdges g' v') $ \e' -> do
       let vDest = fromJust $ Map.lookup (edgeDest e') vertexMap
-      when (edgeDest e' `Set.member` keepStates) $
+      edgeSet <- readSTRef edgeSetRef
+      let l = unsafeEdgeLabel g' e'
+      when (edgeDest e' `Set.member` keepStates &&
+            (l, vSrc, vDest) `Set.notMember` edgeSet) $ do
         void $ addLabeledEdge gNew vSrc vDest (unsafeEdgeLabel g' e')
+        modifySTRef edgeSetRef (Set.insert (l, vSrc, vDest))
 
   return (gNew, vertexMap)
+
+reduceNFA :: Ord sigma => MNFA s sigma -> MNFA s sigma
+reduceNFA mnfa = do
+  nfa <- mnfa
+  g <- gets nbsGraph
+  (g', vertexMap) <- lift $ reduceGraph (nfaStart nfa) (nfaFinals nfa) g
+  states <- lift $ getVertices g'
+  transitions <- lift $ concat <$> mapM (getOutEdges g') states
+  return $ NFAData
+    (Set.fromList states)
+    (Set.fromList transitions)
+    (vertexMap Map.! nfaStart nfa)
+    (Set.fromList . catMaybes $ (flip Map.lookup vertexMap) <$> toList (nfaFinals nfa))
+    (nfaAlphabet nfa)
 
 -- | Add a new state to the NFA graph.
 addState :: NFABuilder s sigma Vertex
@@ -193,7 +214,8 @@ transitionSymbol e = do
 
 -- | Finish constructing an NFA. You must manually add all of the states that
 -- belong to this NFA; this function does not check that!
-finishNFA :: Set Vertex
+finishNFA :: Ord sigma
+          => Set Vertex
           -- ^ All the states in this NFA
           -> Set Edge
           -- ^ All the edges in this NFA
@@ -208,19 +230,19 @@ finishNFA states transitions start finals alpha =
   return $ NFAData states transitions start finals alpha
 
 -- | Create an NFA that accepts no strings.
-empty :: MNFA s sigma
+empty :: Ord sigma => MNFA s sigma
 empty = do
   q0 <- addState
   finishNFA (Set.singleton q0) Set.empty q0 Set.empty Set.empty
 
 -- | Create an NFA that accepts only the empty string.
-epsilon :: MNFA s sigma
+epsilon :: Ord sigma => MNFA s sigma
 epsilon = do
   q0 <- addState
   finishNFA (Set.singleton q0) Set.empty q0 (Set.singleton q0) Set.empty
 
 -- | Create an NFA that accepts a single symbol.
-symbol :: sigma -> MNFA s sigma
+symbol :: Ord sigma => sigma -> MNFA s sigma
 symbol s = do
   q0 <- addState
   qf <- addState
@@ -240,7 +262,7 @@ string [] = epsilon
 string (a:as) = symbol a `cat` string as
 
 -- | Take the union of two NFAs.
-union :: (Ord sigma)
+union :: Ord sigma
       => MNFA s sigma
       -> MNFA s sigma
       -> MNFA s sigma
@@ -281,20 +303,31 @@ cat mnfa1 mnfa2 = do
   nfa2 <- mnfa2
 
   -- For every transition to a final state of nfa1, add a transition from the
-  -- source to the start state of nfa2.
-  ts <- forM (toList (nfaFinals nfa1)) $ \f1 -> do
+  -- source to the start state of nfa2 on the same symbol.
+  ts1 <- forM (toList (nfaFinals nfa1)) $ \f1 -> do
     preds <- transitionsIn f1
     forM (toList preds) $ \(q_previous, s) -> do
       addTransition q_previous (nfaStart nfa2) s
 
+  -- If the start state of nfa1 is a final state, add transitions from nfa1's
+  -- start state to all the successors of nfa2's start state, using the same
+  -- symbol from nfa2's start to the successor.
+  ts2 <- if (nfaStart nfa1 `Set.member` nfaFinals nfa1)
+         then do succs <- transitionsOut (nfaStart nfa2)
+                 forM (toList succs) $ \(q_succ, s) -> do
+                   addTransition (nfaStart nfa1) q_succ s
+         else return []
+
   finishNFA
     (nfaStates nfa1 `Set.union` nfaStates nfa2)
-    (Set.fromList (concat ts) `Set.union`
+    (Set.fromList (concat ts1) `Set.union`
+     Set.fromList ts2 `Set.union`
      nfaTransitions nfa1 `Set.union`
      nfaTransitions nfa2)
     (nfaStart nfa1)
     (nfaFinals nfa2 `Set.union`
-     if nfaStart nfa1 `Set.member` nfaFinals nfa1
+     if nfaStart nfa1 `Set.member` nfaFinals nfa1 &&
+        nfaStart nfa2 `Set.member` nfaFinals nfa2
      then Set.singleton (nfaStart nfa1)
      else Set.empty)
     (nfaAlphabet nfa1 `Set.union` nfaAlphabet nfa2)
@@ -307,7 +340,7 @@ pow i mnfa = mnfa `cat` (pow (i-1) mnfa)
 -- | Like 'pow', but accepts w^0, w^1, ..., w^n.
 upto :: Ord sigma => Int -> MNFA s sigma -> MNFA s sigma
 upto i _ | i <= 0 = epsilon
-upto i mnfa = mnfa `cat` (epsilon `union` upto (i-1) mnfa)
+upto i mnfa = epsilon `union` (mnfa `cat` upto (i-1) mnfa)
 
 -- | Star an NFA.
 star :: Ord sigma
@@ -341,89 +374,166 @@ star mnfa = do
     (Set.singleton q0)
     (nfaAlphabet nfa)
 
--- | Join two NFAs on their shared symbols.
-
--- | Given two NFAs that operate on a common subset, produce an NFA nl whose
--- alphabet is the union of the two alphabets, and whose language is exactly the
--- strings that, when restricted to either of the two alphabets, are exactly the
--- corresponding languages.
+-- | Join two NFAs on their shared symbols. Given two NFAs that operate on a
+-- common subset, produce an NFA whose alphabet is the union of the two
+-- alphabets, and whose language is exactly the strings that, when restricted to
+-- either of the two alphabets, are exactly the corresponding languages.
 --
 -- When the alphabets are the same, this is the same as intersection.
-join :: Ord sigma
-     => MNFA s sigma -> MNFA s sigma -> MNFA s sigma
-join mnfa1 mnfa2 = do
-  nfa1 <- mnfa1
-  nfa2 <- mnfa2
 
-  startRef <- lift $ newSTRef Nothing
-  finalsRef <- lift $ newSTRef Set.empty
+join :: Ord sigma => NFA sigma -> NFA sigma -> NFA sigma
+join nfa1 nfa2 = runST $ do
+  let g1 = graph nfa1
+      g2 = graph nfa2
+      s1 = startState nfa1
+      s2 = startState nfa2
+      finals1 = finalStates nfa1
+      finals2 = finalStates nfa2
 
-  -- map from (nfa1, nfa2) state pairs to joined states.
-  stateMapRef <- lift $ newSTRef Map.empty
+  g <- newEdgeLabeledGraph newMBiDigraph
+  startRef <- newSTRef Nothing
+  finalsRef <- newSTRef Set.empty
 
-  -- First, add all the new vertices and build up the vertex map.
-  states <- forM (toList $ nfaStates nfa1) $ \q1 -> do
-    forM (toList $ nfaStates nfa2) $ \q2 -> do
-      q <- addState
+  -- map from (g1, g2) vertex pairs to g vertices.
+  vertexMapRef <- newSTRef Map.empty
 
-      -- Add new state to vertex map
-      lift $ modifySTRef stateMapRef (Map.insert (q1, q2) q)
+  -- First, add all the vertices and build up the vertex map.
+  forM_ (vertices g1) $ \v1 -> do
+    forM_ (vertices g2) $ \v2 -> do
+      v <- addVertex g
+      -- Add new vertex to vertex map
+      modifySTRef vertexMapRef (Map.insert (v1, v2) v)
+      -- If both vertices are the start state, then the new vertex is the joined
+      -- start state
+      when (v1 == s1 && v2 == s2) $
+        writeSTRef startRef (Just v)
+      -- If both vertices are final states, then the new vertex is one of the
+      -- joined final states
+      when (v1 `Set.member` finals1 && v2 `Set.member` finals2) $
+        modifySTRef finalsRef (Set.insert v)
 
-      -- If both states are the starting state, then the new state is the new
-      -- starting state.
-      when (q1 == nfaStart nfa1 && q2 == nfaStart nfa2) $
-        lift $ writeSTRef startRef (Just q)
+  vertexMap <- readSTRef vertexMapRef
 
-      -- If both states are final states, then the new state is a final state.
-      when (q1 `Set.member` nfaFinals nfa1 && q2 `Set.member` nfaFinals nfa2) $
-        lift $ modifySTRef finalsRef (Set.insert q)
+  let sharedSymbols = alphabet nfa1 `Set.intersection` alphabet nfa2
 
-      return q
+  -- Create a map from all shared labels to corresponding edges in g2.
+  let g2LeftEdgeMap = foldr p Map.empty (edges g2)
+      p e m = let a = fromJust (edgeLabel g2 e)
+              in if a `Set.member` sharedSymbols
+                 then Map.insertWith Set.union a (Set.singleton e) m
+                 else m
 
-  stateMap <- lift $ readSTRef stateMapRef
-
-  let sharedSymbols = nfaAlphabet nfa1 `Set.intersection` nfaAlphabet nfa2
-
-  -- Create a map from all shared labels to corresponding edges in nfa2.
-  let p m t = do
-        a <- transitionSymbol t
-        if a `Set.member` sharedSymbols
-          then return $ Map.insertWith Set.union a (Set.singleton t) m
-          else return m
-  nfa2SharedSymbolEdgeMap <- foldM p Map.empty (nfaTransitions nfa2)
-
-  ts1 <- forM (toList $ nfaTransitions nfa1) $ \t -> do
-    a <- transitionSymbol t
+  forM_ (edges g1) $ \e -> do
+    let a = fromJust (edgeLabel g1 e)
     case a `Set.member` sharedSymbols of
-      False -> forM (toList $ nfaStates nfa2) $ \q2 -> do
-        let src = stateMap Map.! (edgeSource t, q2)
-            dst = stateMap Map.! (edgeDest t, q2)
-        addTransition src dst a
-      True -> case Map.lookup a nfa2SharedSymbolEdgeMap of
-        Nothing -> return []
-        Just ts -> forM (toList ts) $ \t' -> do
-          let src = stateMap Map.! (edgeSource t, edgeSource t')
-              dst = stateMap Map.! (edgeDest t, edgeDest t')
-          addTransition src dst a
+      False -> forM_ (vertices g2) $ \v2 -> do
+        let src = vertexMap Map.! (edgeSource e, v2)
+            dst = vertexMap Map.! (edgeDest e, v2)
+        addLabeledEdge g src dst a
+      True -> case Map.lookup a g2LeftEdgeMap of
+        -- Look up the g2 edges with the same label, and add the corresponding
+        -- vertices.
+        Nothing -> return ()
+        Just es -> forM_ es $ \e' -> do
+          let src = vertexMap Map.! (edgeSource e, edgeSource e')
+              dst = vertexMap Map.! (edgeDest e, edgeDest e')
+          addLabeledEdge g src dst a
 
-  ts2 <- forM (toList $ nfaTransitions nfa2) $ \t -> do
-    a <- transitionSymbol t
+  forM_ (edges g2) $ \e -> do
+    let a = fromJust (edgeLabel g2 e)
     case a `Set.member` sharedSymbols of
-      True -> return []
-      False  -> forM (toList $ nfaStates nfa1) $ \q1 -> do
-        let src = stateMap Map.! (q1, edgeSource t)
-            dst = stateMap Map.! (q1, edgeDest t)
-        addTransition src dst a
+      True -> return ()
+      False  -> forM_ (vertices g1) $ \v1 -> do
+        let src = vertexMap Map.! (v1, edgeSource e)
+            dst = vertexMap Map.! (v1, edgeDest e)
+        addLabeledEdge g src dst a
 
-  start <- lift $ fromJust <$> readSTRef startRef
-  finals <- lift $ readSTRef finalsRef
+  start <- readSTRef startRef
+  finals <- readSTRef finalsRef
 
-  finishNFA
-    (Set.fromList (concat states))
-    (Set.fromList (concat (ts1 ++ ts2)))
-    start
-    finals
-    (nfaAlphabet nfa1 `Set.union` nfaAlphabet nfa2)
+  (g'Mut, reduceMap) <- reduceGraph (fromJust start) finals g
+  g' <- freeze g'Mut
+  let start' = fromJust (Map.lookup (fromJust start) reduceMap)
+      finals' = Set.fromList (catMaybes (flip Map.lookup reduceMap <$> Set.toList finals))
+  return $ mkNFA g' start' finals'
+
+-- join :: Ord sigma
+--      => (forall s1 . MNFA s1 sigma)
+--      -> (forall s2 . MNFA s2 sigma)
+--      -> MNFA s sigma
+-- join mnfa1 mnfa2 = do
+--   nfa1 <- mnfa1
+--   nfa2 <- mnfa2
+
+--   startRef <- lift $ newSTRef Nothing
+--   finalsRef <- lift $ newSTRef Set.empty
+
+--   -- map from (nfa1, nfa2) state pairs to joined states.
+--   stateMapRef <- lift $ newSTRef Map.empty
+
+--   -- First, add all the new vertices and build up the vertex map.
+--   states <- forM (toList $ nfaStates nfa1) $ \q1 -> do
+--     forM (toList $ nfaStates nfa2) $ \q2 -> do
+--       q <- addState
+
+--       -- Add new state to vertex map
+--       lift $ modifySTRef stateMapRef (Map.insert (q1, q2) q)
+
+--       -- If both states are the starting state, then the new state is the new
+--       -- starting state.
+--       when (q1 == nfaStart nfa1 && q2 == nfaStart nfa2) $
+--         lift $ writeSTRef startRef (Just q)
+
+--       -- If both states are final states, then the new state is a final state.
+--       when (q1 `Set.member` nfaFinals nfa1 && q2 `Set.member` nfaFinals nfa2) $
+--         lift $ modifySTRef finalsRef (Set.insert q)
+
+--       return q
+
+--   stateMap <- lift $ readSTRef stateMapRef
+
+--   let sharedSymbols = nfaAlphabet nfa1 `Set.intersection` nfaAlphabet nfa2
+
+--   -- Create a map from all shared labels to corresponding edges in nfa2.
+--   let p m t = do
+--         a <- transitionSymbol t
+--         if a `Set.member` sharedSymbols
+--           then return $ Map.insertWith Set.union a (Set.singleton t) m
+--           else return m
+--   nfa2SharedSymbolEdgeMap <- foldM p Map.empty (nfaTransitions nfa2)
+
+--   ts1 <- forM (toList $ nfaTransitions nfa1) $ \t -> do
+--     a <- transitionSymbol t
+--     case a `Set.member` sharedSymbols of
+--       False -> forM (toList $ nfaStates nfa2) $ \q2 -> do
+--         let src = stateMap Map.! (edgeSource t, q2)
+--             dst = stateMap Map.! (edgeDest t, q2)
+--         addTransition src dst a
+--       True -> case Map.lookup a nfa2SharedSymbolEdgeMap of
+--         Nothing -> return []
+--         Just ts -> forM (toList ts) $ \t' -> do
+--           let src = stateMap Map.! (edgeSource t, edgeSource t')
+--               dst = stateMap Map.! (edgeDest t, edgeDest t')
+--           addTransition src dst a
+
+--   ts2 <- forM (toList $ nfaTransitions nfa2) $ \t -> do
+--     a <- transitionSymbol t
+--     case a `Set.member` sharedSymbols of
+--       True -> return []
+--       False  -> forM (toList $ nfaStates nfa1) $ \q1 -> do
+--         let src = stateMap Map.! (q1, edgeSource t)
+--             dst = stateMap Map.! (q1, edgeDest t)
+--         addTransition src dst a
+
+--   start <- lift $ fromJust <$> readSTRef startRef
+--   finals <- lift $ readSTRef finalsRef
+
+--   finishNFA
+--     (Set.fromList (concat states))
+--     (Set.fromList (concat (ts1 ++ ts2)))
+--     start
+--     finals
+--     (nfaAlphabet nfa1 `Set.union` nfaAlphabet nfa2)
 
 -- | One round of string generation.
 generate1 :: (Monoid m, Ord m, Graph g)

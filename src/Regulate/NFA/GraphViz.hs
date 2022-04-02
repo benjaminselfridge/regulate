@@ -37,6 +37,10 @@ instance SymbolLabel Char where
 instance SymbolLabel String where
   symbolLabel = id
 
+instance (SymbolLabel a, SymbolLabel b) => SymbolLabel (Either a b) where
+  symbolLabel (Left a) = symbolLabel a
+  symbolLabel (Right b) = symbolLabel b
+
 -- | Shows an object, converts all characters to lowercase, and replaces
 -- underscores with spaces. This can be handy for writing 'SymbolLabel'
 -- instances.
@@ -45,7 +49,7 @@ eventLabel = map (toLower . space) . show
   where space '_' = ' '
         space c = c
 
--- | Graph an 'NFA' and write it to a PNG file.
+-- | Create a PNG picture of an 'NFA' and write it to a file.
 graphNFA :: SymbolLabel sigma => FilePath -> NFA sigma -> IO ()
 graphNFA path nfa = do
   let edgesWithLabels =
@@ -54,7 +58,9 @@ graphNFA path nfa = do
         , let Just l = H.edgeLabel (graph nfa) e
         ]
       params = GV.nonClusteredParams
-        { GV.fmtEdge = \(_, _, l) ->
+        { GV.globalAttributes =
+            [ GV.GraphAttrs [GV.DPI 192.0]]
+        , GV.fmtEdge = \(_, _, l) ->
             [GV.Label (GV.StrLabel (T.pack $ " " ++ symbolLabel l ++ " "))]
         , GV.fmtNode = \(n, _l) ->
             let fillColor = if n == startState nfa
@@ -75,7 +81,7 @@ graphNFA path nfa = do
 
   void $ GV.runGraphviz (H.vertexId <$> dot) GV.Png path
 
--- | Build and graph an 'MNFA' and write it to a PNG file.
+-- | Create a PNG picture of an 'MNFA' and write it to a file.
 graphMNFA :: (SymbolLabel sigma, Ord sigma)
           => FilePath -> (forall s . MNFA s sigma) -> IO ()
 graphMNFA path g = graphNFA path (buildNFA g)
