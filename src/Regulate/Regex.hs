@@ -1,6 +1,6 @@
 {-# LANGUAGE MonadComprehensions #-}
 
--- | Very simple module for generating strings from Kleene-style regular
+-- Very simple module for generating strings from Kleene-style regular
 -- expressions. Uses @control-monad-omega@ to get a breadth-first, rather than
 -- depth-first, ordering of the string set. In this way, we can guarantee that
 -- if @s@ is a string in the set of strings described by regular expression @r@,
@@ -42,125 +42,98 @@
 -- ( ( 'a' | 'b' ) ( ε | ( 'a' | 'b' ) ) )
 -- >>> generate r'
 -- ["a","aa","b","ab","ba","bb"]
+
+-- | Implementation of Kleene-style regular expressions.
 module Regulate.Regex
   ( Regex(..)
   , ppRegex
-  , generate
   -- * Building regular expressions
-  , emptySet
-  , emptyString
-  , constant
-  , oneOf
+  , empty
+  , epsilon
+  , symbol
+  , string
+  , union, (>|<)
+  , cat, (><)
   , optional
-  , alt
-  , cat
-  , plus
-  , star
+  , oneof
   , pow
-  , upTo
-  , upTo1
-  , scope
+  , upto
+  , star
   ) where
-
-import Control.Monad.Omega
 
 -- | Kleene-style regular expressions.
 data Regex a
-  = EmptySet
-  | EmptyString
-  | Constant a
-  | Alt (Regex a) (Regex a)
+  = Empty
+  | Epsilon
+  | Symbol a
+  | Union (Regex a) (Regex a)
   | Cat (Regex a) (Regex a)
-  | Plus (Regex a)
+  | Star (Regex a)
   deriving (Show, Read)
 
 -- | Pretty-print a regular expression.
 ppRegex :: Show a => Regex a -> String
-ppRegex EmptySet = "∅"
-ppRegex EmptyString = "ε"
-ppRegex (Constant a) = show a
-ppRegex (Alt r s) = "( " ++ ppRegex r ++ " | " ++ ppRegex s ++ " )"
-ppRegex (Cat r s) = "( " ++ ppRegex r ++ " " ++ ppRegex s ++ " )"
-ppRegex (Plus r) = "(+ " ++ ppRegex r ++ " +)"
+ppRegex Empty = "∅"
+ppRegex Epsilon = "ε"
+ppRegex (Symbol a) = show a
+ppRegex (Union r s) = "(" ++ ppRegex r ++ "|" ++ ppRegex s ++ ")"
+ppRegex (Cat r s) = "(" ++ ppRegex r ++ ppRegex s ++ ")"
+ppRegex (Star r) = "(" ++ ppRegex r ++ ")*"
 
 -- | The empty set of strings.
-emptySet :: Regex a
-emptySet = EmptySet
+empty :: Regex a
+empty = Empty
 
 -- | The singleton set containing the empty string.
-emptyString :: Regex a
-emptyString = EmptyString
+epsilon :: Regex a
+epsilon = Epsilon
 
 -- | The singleton set containing the string of length one corresponding to the
 -- given token.
-constant :: a -> Regex a
-constant = Constant
+symbol :: a -> Regex a
+symbol = Symbol
 
--- | The set of all strings of length one from a given token set.
-oneOf :: [a] -> Regex a
-oneOf = alt . map Constant
+-- | Create a regex for a particular string.
+string :: [a] -> Regex a
+string [] = epsilon
+string (a:as) = symbol a >< string as
 
--- | Given a regular expression, add the empty string to its set.
+-- | Infix 'union'.
+(>|<) :: Regex a -> Regex a -> Regex a
+(>|<) = union
+infixl 6 >|<
+
+-- | Take the union of two regexes.
+union :: Regex a -> Regex a -> Regex a
+union = Union
+
+-- | Infix 'cat'.
+(><) :: Regex a -> Regex a -> Regex a
+(><) = cat
+infixl 7 ><
+
+-- | Concatenate two regexes.
+cat :: Regex a -> Regex a -> Regex a
+cat = Cat
+
+-- | Zero or one. Equivalent to 'union'ing with 'epsilon'.
 optional :: Regex a -> Regex a
-optional = Alt EmptyString
+optional = (epsilon >|<)
 
--- | @alt [a, b, c, ..] === (a|b|c|...)@
-alt :: [Regex a] -> Regex a
-alt [] = EmptySet
-alt as = foldr1 Alt as
+-- | Union of symbols.
+oneof :: [a] -> Regex a
+oneof as = foldr1 union (symbol <$> as)
 
--- | @cat [a, b, c, ..] === abc...@
-cat :: [Regex a] -> Regex a
-cat [] = EmptyString
-cat as = foldr1 Cat as
+-- | Repeat a regex some number of times.
+pow :: Int -> Regex a -> Regex a
+pow i _ | i <= 0 = epsilon
+pow i e = e >< pow (i-1) e
 
--- | The @+@ operator (one or more concatenated).
-plus :: Regex a -> Regex a
-plus = Plus
+-- | Like 'pow', but accepts w^0, w^1, ..., w^n.
+upto :: Int -> Regex a -> Regex a
+upto i _ | i <= 0 = epsilon
+upto i e = epsilon >|< (e >< upto (i-1) e)
 
--- | The @*@ operator (zero or more concatenated).
+-- | Kleene-* of two regexes.
 star :: Regex a -> Regex a
-star = Alt EmptyString . Plus
-
--- | The @^@ operator (exactly n).
-pow :: Regex a -> Int -> Regex a
-pow r i | i <= 0 = EmptyString
-        | otherwise = foldr1 Cat (replicate i r)
-
--- | Like @*@, but limits the number of repeats to a certain depth. If given a
--- negative integer, silently treats it as @0@.
-upTo :: Regex a -> Int -> Regex a
-upTo r i | i <= 0 = EmptyString
-         | otherwise = optional (Cat r (r `upTo` (i-1)))
-
--- | Like @+@, but limits the number of repeats to a certain depth. If given a
--- non-positive integer, silently treats it as @1@.
-upTo1 :: Regex a -> Int -> Regex a
-upTo1 r i | i <= 1 = r
-          | otherwise = (Cat r (optional (r `upTo1` (i-1))))
-
--- | Generate all strings from a given regular expression in a sensible order
--- (breadth-first).
-generate :: Regex a -> [[a]]
-generate EmptySet = []
-generate EmptyString = [[]]
-generate (Constant a) = [[a]]
-generate (Alt r s) = diagonal [generate r, generate s]
-generate (Cat r s) = runOmega [ x ++ y | x <- each (generate r)
-                                       , y <- each (generate s) ]
-generate (Plus r) = diagonal (generate . cat <$> tau r)
-
--- | "Scope" a regular expression by replacing all the plus operators with
--- @upto1@ operators.
-scope :: Int
-         -- ^ how many times to repeat each + operator (must be >0)
-      -> Regex a
-      -> Regex a
-scope i (Alt r s) = Alt (scope i r) (scope i s)
-scope i (Cat r s) = Cat (scope i r) (scope i s)
-scope i (Plus r) = upTo1 (scope i r) i
-scope _ r = r
-
--- | Given a single a, produce the infinite list @[[a], [a,a], [a,a,a], ...]
-tau :: a -> [[a]]
-tau a = [a] : [ a : as | as <- tau a ]
+star = Star

@@ -34,16 +34,17 @@ library
     -- other-extensions:
     build-depends:    base >= 4.14,
                       containers,
-                      control-monad-omega >= 0.3.1,
                       fgl,
                       graphviz,
                       haggle,
+                      hashable,
                       mtl,
                       parameterized-utils,
                       primitive,
                       ref-tf,
                       text,
-                      unicode-tricks
+                      unicode-tricks,
+                      unordered-containers
     ghc-options:      -Wall
     hs-source-dirs:   src
     default-language: Haskell2010

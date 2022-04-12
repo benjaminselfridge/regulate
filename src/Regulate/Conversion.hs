@@ -1,36 +1,24 @@
+{-# LANGUAGE RankNTypes #-}
+
 -- | Module for converting between various representations of regular languages.
-module Regulate.Conversion where
+module Regulate.Conversion
+  ( regexToMNFA
+  , regexToNFA
+  ) where
 
--- import Control.Monad.ST
--- import Regulate.NFA ( NFA(..) )
--- import Regulate.Regex ( Regex(..) )
+import           Regulate.NFA (NFA, MNFA, buildNFA)
+import qualified Regulate.NFA as NFA
+import           Regulate.Regex ( Regex(..) )
 
--- import Data.Graph.Haggle
--- import Data.Set (Set)
--- import qualified Data.Set as Set
+-- | Convert a regex to an 'MNFA'.
+regexToMNFA :: Ord a => Regex a -> MNFA s a
+regexToMNFA Empty = NFA.empty
+regexToMNFA Epsilon = NFA.epsilon
+regexToMNFA (Symbol a) = NFA.symbol a
+regexToMNFA (Union r s) = NFA.union (regexToMNFA r) (regexToMNFA s)
+regexToMNFA (Cat r s) = NFA.cat (regexToMNFA r) (regexToMNFA s)
+regexToMNFA (Star r) = NFA.star (regexToMNFA r)
 
--- data Tree a = Leaf a
---             | Branch (Tree a) (Tree a)
-
--- regexToNFA' :: Regex sigma
---             -> ST s ( Tree (EdgeLabeledMGraph MDigraph (Maybe sigma) (ST s))
---                     , Vertex
---                     , Set Vertex)
--- regexToNFA' EmptySet = do
---   g <- newEdgeLabeledGraph newMDigraph
---   q0 <- addVertex g
---   return $ (Leaf g, q0, Set.empty)
--- regexToNFA' EmptyString = do
---   g <- newEdgeLabeledGraph newMDigraph
---   q0 <- addVertex g
---   return $ (Leaf g, q0, Set.singleton q0)
--- regexToNFA' (Constant a) = do
---   g <- newEdgeLabeledGraph newMDigraph
---   q0 <- addVertex g
---   q1 <- addVertex g
---   addLabeledEdge g q0 q1 (Just a)
---   return $ (Leaf g, q0, Set.singleton q1)
--- regexToNFA' (Alt r s) = do
---   undefined
--- regexToNFA' (Cat r s) = undefined
--- regexToNFA' (Plus r) = undefined
+-- | Convert a regex to an 'NFA'.
+regexToNFA :: Ord a => Regex a -> NFA a
+regexToNFA r = buildNFA (regexToMNFA r)
